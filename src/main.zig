@@ -3,13 +3,16 @@ const Io = std.Io;
 
 const zig_todo = @import("zig_todo");
 const cli = zig_todo.cli;
+const app = zig_todo.app;
+const storage = zig_todo.storage;
 
 pub fn main(init: std.process.Init) !void {
     const arena: std.mem.Allocator = init.arena.allocator();
+    const gpa = init.gpa;
     const args = try init.minimal.args.toSlice(arena);
     const io = init.io;
 
-    var stdout_buffer: [1024]u8 = undefined;
+    var stdout_buffer: [4096]u8 = undefined;
     var stdout_file_writer: Io.File.Writer = .init(.stdout(), io, &stdout_buffer);
     const stdout = &stdout_file_writer.interface;
 
@@ -17,8 +20,8 @@ pub fn main(init: std.process.Init) !void {
     var stderr_file_writer: Io.File.Writer = .init(.stderr(), io, &stderr_buffer);
     const stderr = &stderr_file_writer.interface;
 
-    const command = cli.args.parse(args);
-    const code: u8 = switch (command) {
+    const parsed = cli.args.parse(args);
+    const code: u8 = switch (parsed.command) {
         .help => blk: {
             try cli.output.printHelp(stdout);
             try stdout.flush();
@@ -29,6 +32,11 @@ pub fn main(init: std.process.Init) !void {
             try stdout.flush();
             break :blk cli.exit_codes.success;
         },
+        .usage => |msg| blk: {
+            try cli.output.printUsageError(stderr, msg);
+            try stderr.flush();
+            break :blk cli.exit_codes.usage_error;
+        },
         .unknown => |name| blk: {
             try cli.output.printUsageError(stderr, try std.fmt.allocPrint(
                 arena,
@@ -38,9 +46,90 @@ pub fn main(init: std.process.Init) !void {
             try stderr.flush();
             break :blk cli.exit_codes.usage_error;
         },
+        .add, .list, .done, .rm => blk: {
+            break :blk try runMutating(init, parsed, stdout, stderr, gpa, io);
+        },
     };
 
     if (code != cli.exit_codes.success) {
         std.process.exit(code);
     }
+}
+
+fn runMutating(
+    init: std.process.Init,
+    parsed: cli.commands.Parsed,
+    stdout: *Io.Writer,
+    stderr: *Io.Writer,
+    gpa: std.mem.Allocator,
+    io: Io,
+) !u8 {
+    const data_dir = try storage.paths.resolveDataDir(
+        gpa,
+        init.minimal.environ,
+        parsed.data_dir,
+    );
+    defer gpa.free(data_dir);
+
+    var store = try storage.store.JsonFileStore.init(gpa, io, data_dir);
+    defer store.deinit();
+
+    const now = app.now(io);
+
+    return switch (parsed.command) {
+        .add => |a| blk: {
+            const id = app.add(&store, a.text, now) catch |err| {
+                break :blk try mapError(stderr, err);
+            };
+            try cli.output.printAdded(stdout, id, a.text);
+            try stdout.flush();
+            break :blk cli.exit_codes.success;
+        },
+        .list => |l| blk: {
+            var list = app.loadAll(&store) catch |err| {
+                break :blk try mapError(stderr, err);
+            };
+            defer list.deinit();
+            try cli.output.printTodoList(stdout, &list, l.status);
+            try stdout.flush();
+            break :blk cli.exit_codes.success;
+        },
+        .done => |d| blk: {
+            app.markDone(&store, d.id, now) catch |err| {
+                break :blk try mapError(stderr, err);
+            };
+            try cli.output.printDone(stdout, d.id);
+            try stdout.flush();
+            break :blk cli.exit_codes.success;
+        },
+        .rm => |r| blk: {
+            app.remove(&store, r.id) catch |err| {
+                break :blk try mapError(stderr, err);
+            };
+            try cli.output.printRemoved(stdout, r.id);
+            try stdout.flush();
+            break :blk cli.exit_codes.success;
+        },
+        else => unreachable,
+    };
+}
+
+fn mapError(stderr: *Io.Writer, err: anyerror) !u8 {
+    const msg: []const u8 = switch (err) {
+        error.NotFound => "todo not found",
+        error.EmptyText => "todo text must not be empty",
+        error.TextTooLong => "todo text is too long",
+        error.CorruptData => "todos.json is corrupt",
+        error.UnsupportedVersion => "unsupported todos.json version",
+        error.OutOfMemory => "out of memory",
+        error.IoError => "filesystem error",
+        else => "unexpected error",
+    };
+    try cli.output.printError(stderr, msg);
+    try stderr.flush();
+    return switch (err) {
+        error.NotFound, error.EmptyText, error.TextTooLong => cli.exit_codes.general_error,
+        error.CorruptData, error.UnsupportedVersion, error.OutOfMemory, error.IoError => cli.exit_codes.internal_error,
+        else => cli.exit_codes.internal_error,
+    };
 }
