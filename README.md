@@ -2,7 +2,7 @@
 
 用 Zig 实现的轻量本地 Todo CLI。
 
-当前进度：**P1 MVP 完成**（`add` / `list` / `done` / `rm` + JSON 持久化）。设计文档见 [`docs/`](./docs/README.md)。
+当前进度：**P2 完成**（v1：优先级 / 标签 / edit / show / `--json` / clear）。设计文档见 [`docs/`](./docs/README.md)。
 
 ## 要求
 
@@ -14,29 +14,32 @@
 zig build
 ./zig-out/bin/zig-todo --help
 
-# 指定数据目录（推荐开发/测试时使用）
-./zig-out/bin/zig-todo --data-dir /tmp/zig-todo-demo add "first task"
-./zig-out/bin/zig-todo --data-dir /tmp/zig-todo-demo list
-./zig-out/bin/zig-todo --data-dir /tmp/zig-todo-demo done 1
+DATA=/tmp/zig-todo-demo
+./zig-out/bin/zig-todo --data-dir "$DATA" add "写文档" -p high -t docs -t cli
+./zig-out/bin/zig-todo --data-dir "$DATA" list --priority high --tag docs
+./zig-out/bin/zig-todo --data-dir "$DATA" edit 1 -d "写产品与架构文档"
+./zig-out/bin/zig-todo --data-dir "$DATA" list --json
+./zig-out/bin/zig-todo --data-dir "$DATA" clear --done
 
 zig build test
 ```
 
-## 命令
+## 命令速查
 
 | 命令 | 说明 |
 | --- | --- |
-| `add "<text>"` | 新增待办 |
-| `list` / `ls` | 列表（默认仅 open） |
-| `list --status all` | 全部状态 |
-| `done <id>` | 标记完成 |
+| `add "<text>" [-p pri] [-t tag]...` | 新增 |
+| `list` / `ls` | 列表（默认可 open） |
+| `list --status/--priority/--tag` | 组合过滤 |
+| `show <id>` | 详情 |
+| `edit <id> [-d text] [-p pri] [-t tag]...` | 编辑 |
+| `done` / `undone <id>` | 完成 / 取消完成 |
 | `rm` / `delete <id>` | 删除 |
-| `version` / `-V` | 版本 |
-| `help` / `-h` | 帮助 |
+| `clear --done` | 清理已完成 |
+| `--json` | JSON 输出 |
+| `--data-dir` / `ZIG_TODO_DATA_DIR` | 数据目录 |
 
-全局：`--data-dir <path>`，或环境变量 `ZIG_TODO_DATA_DIR`。
-
-默认数据目录（macOS）：`~/Library/Application Support/zig-todo/todos.json`。
+默认数据文件（macOS）：`~/Library/Application Support/zig-todo/todos.json`。
 
 ## 文档
 

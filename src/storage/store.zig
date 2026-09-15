@@ -95,8 +95,8 @@ pub const JsonFileStore = struct {
         defer parsed.deinit();
 
         if (parsed.value.version > schema_version) return error.UnsupportedVersion;
-        if (parsed.value.version < schema_version) {
-            // P1: only v1 exists; older would need migrate.zig
+        if (migrate.needsMigration(parsed.value.version)) {
+            // Only v1 exists today; migrateInPlace will reject unknown steps.
             return error.UnsupportedVersion;
         }
 
@@ -193,8 +193,8 @@ test "json store roundtrip in temp dir" {
     {
         var list = TodoList.init(gpa);
         defer list.deinit();
-        _ = try list.addNew("first task", 100);
-        _ = try list.addNew("second", 101);
+        _ = try list.addNew("first task", 100, .{ .priority = .high, .tags = &.{"docs"} });
+        _ = try list.addNew("second", 101, .{});
         try list.markDone(1, 110);
         try store.save(&list);
     }

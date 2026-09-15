@@ -1,6 +1,14 @@
+const std = @import("std");
 const todo_mod = @import("todo.zig");
 
 pub const StatusFilter = enum { open, done, all };
+
+pub const Filter = struct {
+    status: StatusFilter = .open,
+    priority: ?todo_mod.Priority = null,
+    /// All listed tags must be present (AND).
+    tags: []const []const u8 = &.{},
+};
 
 pub fn matchesStatus(item: todo_mod.Todo, filter: StatusFilter) bool {
     return switch (filter) {
@@ -10,17 +18,27 @@ pub fn matchesStatus(item: todo_mod.Todo, filter: StatusFilter) bool {
     };
 }
 
-test "status filter" {
-    const std = @import("std");
-    const gpa = std.testing.allocator;
-    var open_item = try todo_mod.create(gpa, 1, "a", 0);
-    defer open_item.deinit(gpa);
-    var done_item = try todo_mod.create(gpa, 2, "b", 0);
-    defer done_item.deinit(gpa);
-    todo_mod.markDone(&done_item, 1);
+pub fn matches(item: todo_mod.Todo, filter: Filter) bool {
+    if (!matchesStatus(item, filter.status)) return false;
+    if (filter.priority) |p| {
+        if (item.priority != p) return false;
+    }
+    for (filter.tags) |tag| {
+        if (!item.hasTag(tag)) return false;
+    }
+    return true;
+}
 
-    try std.testing.expect(matchesStatus(open_item, .open));
-    try std.testing.expect(!matchesStatus(done_item, .open));
-    try std.testing.expect(matchesStatus(done_item, .done));
-    try std.testing.expect(matchesStatus(open_item, .all));
+test "combined filter" {
+    const gpa = std.testing.allocator;
+    var item = try todo_mod.create(gpa, 1, "a", 0, .{
+        .priority = .high,
+        .tags = &.{ "docs", "cli" },
+    });
+    defer item.deinit(gpa);
+
+    try std.testing.expect(matches(item, .{ .status = .open, .priority = .high, .tags = &.{"docs"} }));
+    try std.testing.expect(!matches(item, .{ .status = .open, .priority = .low }));
+    try std.testing.expect(!matches(item, .{ .status = .open, .tags = &.{"missing"} }));
+    try std.testing.expect(matches(item, .{ .status = .open, .tags = &.{ "docs", "cli" } }));
 }
