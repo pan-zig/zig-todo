@@ -152,3 +152,11 @@ test "heal next_id" {
     list.healIds();
     try std.testing.expectEqual(@as(u64, 10), list.next_id);
 }
+
+test "markDone NotFound" {
+    const gpa = std.testing.allocator;
+    var list = TodoList.init(gpa);
+    defer list.deinit();
+    try std.testing.expectError(error.NotFound, list.markDone(99, 1));
+    try std.testing.expectError(error.NotFound, list.removeById(99));
+}

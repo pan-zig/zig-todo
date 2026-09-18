@@ -38,6 +38,10 @@ pub fn printHelp(writer: *Io.Writer) Io.Writer.Error!void {
         \\  -h, --help             Show this help
         \\  -V, --version          Print version
         \\
+        \\Data file:
+        \\  macOS default: ~/Library/Application Support/zig-todo/todos.json
+        \\  Override with --data-dir or ZIG_TODO_DATA_DIR
+        \\
         \\Examples:
         \\  zig-todo add "写文档" -p high -t docs -t cli
         \\  zig-todo list --priority high --tag docs
@@ -90,27 +94,47 @@ pub fn printTodoList(
     list: *const domain_list.TodoList,
     filter: filter_mod.Filter,
 ) Io.Writer.Error!void {
-    var shown: usize = 0;
+    const id_w: usize = 4;
+    const pri_w: usize = 5;
+    const status_w: usize = 7;
+    const tags_w: usize = 12;
+    var matched: usize = 0;
+
     for (list.items.items) |item| {
         if (!filter_mod.matches(item, filter)) continue;
-        if (shown == 0) {
-            try writer.writeAll("ID  PRI   STATUS  TAGS        TEXT\n");
-        }
-        shown += 1;
-        try writer.print("{d:<3} {s:<5} {s:<7} ", .{
-            item.id,
-            domain_todo.priorityString(item.priority),
-            statusString(item.status),
-        });
-        try writeTagsPadded(writer, item.tags, 11);
-        try writer.print(" {s}\n", .{item.text});
+        matched += 1;
     }
-    if (shown == 0) {
+
+    if (matched == 0) {
         if (list.items.items.len == 0) {
-            try writer.writeAll("No todos. Add one with: zig-todo add \"...\"\n");
+            try writer.writeAll("No todos yet.\n");
+            try writer.writeAll("Add one with: zig-todo add \"your task\"\n");
         } else {
-            try writer.writeAll("No todos matched.\n");
+            try writer.writeAll("No todos matched the current filters.\n");
+            try writer.writeAll("Try: zig-todo list --status all\n");
         }
+        return;
+    }
+
+    try padWrite(writer, "ID", id_w);
+    try writer.writeAll("  ");
+    try padWrite(writer, "PRI", pri_w);
+    try writer.writeAll("  ");
+    try padWrite(writer, "STATUS", status_w);
+    try writer.writeAll("  ");
+    try padWrite(writer, "TAGS", tags_w);
+    try writer.writeAll("  TEXT\n");
+
+    for (list.items.items) |item| {
+        if (!filter_mod.matches(item, filter)) continue;
+        try padWriteInt(writer, item.id, id_w);
+        try writer.writeAll("  ");
+        try padWrite(writer, domain_todo.priorityString(item.priority), pri_w);
+        try writer.writeAll("  ");
+        try padWrite(writer, statusString(item.status), status_w);
+        try writer.writeAll("  ");
+        try writeTagsPadded(writer, item.tags, tags_w);
+        try writer.print("  {s}\n", .{item.text});
     }
 }
 
@@ -126,7 +150,7 @@ pub fn printTodoDetail(writer: *Io.Writer, item: domain_todo.Todo) Io.Writer.Err
     if (item.completed_at) |c| {
         try writer.print("completed_at: {d}\n", .{c});
     } else {
-        try writer.writeAll("completed_at: null\n");
+        try writer.writeAll("completed_at: -\n");
     }
     try writer.print("text:         {s}\n", .{item.text});
 }
@@ -185,6 +209,18 @@ fn statusString(s: domain_todo.Status) []const u8 {
         .open => "open",
         .done => "done",
     };
+}
+
+fn padWrite(writer: *Io.Writer, text: []const u8, width: usize) Io.Writer.Error!void {
+    try writer.writeAll(text);
+    var i: usize = text.len;
+    while (i < width) : (i += 1) try writer.writeByte(' ');
+}
+
+fn padWriteInt(writer: *Io.Writer, n: u64, width: usize) Io.Writer.Error!void {
+    var buf: [20]u8 = undefined;
+    const text = std.fmt.bufPrint(&buf, "{d}", .{n}) catch unreachable;
+    try padWrite(writer, text, width);
 }
 
 fn writeTagsPlain(writer: *Io.Writer, tags: []const []const u8) Io.Writer.Error!void {

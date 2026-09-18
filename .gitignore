@@ -4,3 +4,4 @@ zig-out/
 *.obj
 .DS_Store
 todos.json
+todos.json.bak

@@ -1,13 +1,13 @@
 const std = @import("std");
 const Io = std.Io;
 const Dir = Io.Dir;
-const File = Io.File;
 const Allocator = std.mem.Allocator;
 
 const domain_list = @import("../domain/list.zig");
 const domain_todo = @import("../domain/todo.zig");
 const migrate = @import("migrate.zig");
 const paths = @import("paths.zig");
+const atomic_file = @import("atomic_file.zig");
 
 pub const TodoList = domain_list.TodoList;
 pub const Todo = domain_todo.Todo;
@@ -163,13 +163,7 @@ pub const JsonFileStore = struct {
         }) catch return error.OutOfMemory;
         defer self.allocator.free(bytes);
 
-        const file = Dir.createFileAbsolute(self.io, self.file_path, .{
-            .read = false,
-        }) catch return error.IoError;
-        defer file.close(self.io);
-
-        file.writeStreamingAll(self.io, bytes) catch return error.IoError;
-        file.writeStreamingAll(self.io, "\n") catch return error.IoError;
+        atomic_file.writeAtomicReplace(self.io, self.data_dir, paths.file_name, bytes) catch return error.IoError;
     }
 
     fn ensureDataDir(self: *JsonFileStore) !void {
@@ -208,4 +202,60 @@ test "json store roundtrip in temp dir" {
         try std.testing.expectEqualStrings("second", loaded.items.items[1].text);
         try std.testing.expectEqual(@as(u64, 3), loaded.next_id);
     }
+}
+
+test "json store rejects corrupt data" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const data_dir = try std.fs.path.join(gpa, &.{ ".zig-cache", "tmp", &tmp.sub_path });
+    defer gpa.free(data_dir);
+
+    try Dir.createDirPath(.cwd(), io, data_dir);
+    const file_path = try paths.todosFilePath(gpa, data_dir);
+    defer gpa.free(file_path);
+
+    const file = try Dir.createFileAbsolute(io, file_path, .{});
+    defer file.close(io);
+    try file.writeStreamingAll(io, "{not-json");
+
+    var store = try JsonFileStore.init(gpa, io, data_dir);
+    defer store.deinit();
+    try std.testing.expectError(error.CorruptData, store.load());
+}
+
+test "json store save creates bak snapshot" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const data_dir = try std.fs.path.join(gpa, &.{ ".zig-cache", "tmp", &tmp.sub_path });
+    defer gpa.free(data_dir);
+
+    var store = try JsonFileStore.init(gpa, io, data_dir);
+    defer store.deinit();
+
+    {
+        var list = TodoList.init(gpa);
+        defer list.deinit();
+        _ = try list.addNew("one", 1, .{});
+        try store.save(&list);
+    }
+    {
+        var list = TodoList.init(gpa);
+        defer list.deinit();
+        _ = try list.addNew("two", 2, .{});
+        try store.save(&list);
+    }
+
+    const bak_path = try std.fs.path.join(gpa, &.{ data_dir, paths.bak_file_name });
+    defer gpa.free(bak_path);
+    const bak_bytes = try Dir.readFileAlloc(.cwd(), io, bak_path, gpa, .limited(1024 * 1024));
+    defer gpa.free(bak_bytes);
+    try std.testing.expect(std.mem.indexOf(u8, bak_bytes, "one") != null);
 }

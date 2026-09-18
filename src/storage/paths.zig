@@ -4,6 +4,7 @@ const Allocator = std.mem.Allocator;
 const Environ = std.process.Environ;
 
 pub const file_name = "todos.json";
+pub const bak_file_name = "todos.json.bak";
 
 /// Resolve data directory.
 /// Priority: override → ZIG_TODO_DATA_DIR → XDG_DATA_HOME/zig-todo → platform default.

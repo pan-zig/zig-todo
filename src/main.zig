@@ -208,7 +208,7 @@ fn mapError(stderr: *Io.Writer, err: anyerror) !u8 {
         error.EmptyTag => "tag must not be empty",
         error.TagTooLong => "tag is too long",
         error.TooManyTags => "too many tags",
-        error.CorruptData => "todos.json is corrupt",
+        error.CorruptData => "todos.json is corrupt; check todos.json.bak if present",
         error.UnsupportedVersion => "unsupported todos.json version",
         error.OutOfMemory => "out of memory",
         error.IoError => "filesystem error",
