@@ -17,6 +17,7 @@ pub const Todo = struct {
     created_at: i64,
     updated_at: i64,
     completed_at: ?i64,
+    due_at: ?i64,
 
     pub fn deinit(self: Todo, allocator: Allocator) void {
         allocator.free(self.text);
@@ -29,6 +30,12 @@ pub const Todo = struct {
             if (eqlAsciiIgnoreCase(t, needle)) return true;
         }
         return false;
+    }
+
+    pub fn isOverdue(self: Todo, now: i64) bool {
+        if (self.status != .open) return false;
+        const due = self.due_at orelse return false;
+        return due < now;
     }
 };
 
@@ -45,6 +52,7 @@ pub const CreateOptions = struct {
     priority: Priority = .medium,
     /// Raw tags; will be normalized (lowercased, trimmed, deduped).
     tags: []const []const u8 = &.{},
+    due_at: ?i64 = null,
 };
 
 pub const EditError = CreateError;
@@ -72,6 +80,7 @@ pub fn create(
         .created_at = now,
         .updated_at = now,
         .completed_at = null,
+        .due_at = options.due_at,
     };
 }
 
@@ -103,6 +112,11 @@ pub fn setTags(self: *Todo, allocator: Allocator, tags: []const []const u8, now:
     const owned = try normalizeTags(allocator, tags);
     freeTags(allocator, self.tags);
     self.tags = owned;
+    self.updated_at = now;
+}
+
+pub fn setDueAt(self: *Todo, due_at: ?i64, now: i64) void {
+    self.due_at = due_at;
     self.updated_at = now;
 }
 

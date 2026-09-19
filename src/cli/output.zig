@@ -6,6 +6,7 @@ const version = @import("../version.zig").version;
 const domain_todo = @import("../domain/todo.zig");
 const domain_list = @import("../domain/list.zig");
 const filter_mod = @import("../domain/filter.zig");
+const date_util = @import("../util/date.zig");
 
 pub fn printHelp(writer: *Io.Writer) Io.Writer.Error!void {
     try writer.writeAll(
@@ -15,21 +16,25 @@ pub fn printHelp(writer: *Io.Writer) Io.Writer.Error!void {
         \\  zig-todo [global flags] <command> [flags] [args]
         \\
         \\Commands:
-        \\  add "<text>" [-p pri] [-t tag]...   Add a todo
+        \\  add "<text>" [-p pri] [-t tag]... [--due YYYY-MM-DD]
         \\  list, ls [filters]                  List todos (default: open)
         \\  show <id>                           Show one todo
-        \\  edit <id> [-d text] [-p pri] [-t tag]...
+        \\  edit <id> [-d text] [-p pri] [-t tag]... [--due DATE|none]
         \\  done <id>                           Mark done
         \\  undone <id>                         Mark open
         \\  rm, delete <id>                     Delete
         \\  clear --done                        Remove completed todos
+        \\  archive --done                      Move completed to archive.json
+        \\  export [path]                       Export JSON array (stdout if no path)
+        \\  import <path>                       Import JSON array or document
         \\  version                             Print version
         \\  help                                Show this help
         \\
         \\List filters:
-        \\  --status open|done|all
+        \\  --all / --done / --open             Status filter
         \\  --priority|-p low|medium|high
         \\  --tag|-t <tag>                      (repeatable, AND)
+        \\  --overdue                           Open todos past due date
         \\
         \\Global flags:
         \\  --json                 JSON output
@@ -39,15 +44,17 @@ pub fn printHelp(writer: *Io.Writer) Io.Writer.Error!void {
         \\  -V, --version          Print version
         \\
         \\Data file:
-        \\  macOS default: ~/Library/Application Support/zig-todo/todos.json
+        \\  macOS: ~/Library/Application Support/zig-todo/todos.json
+        \\  Linux: ~/.local/share/zig-todo/todos.json
+        \\  Windows: %APPDATA%\zig-todo\todos.json
         \\  Override with --data-dir or ZIG_TODO_DATA_DIR
         \\
         \\Examples:
-        \\  zig-todo add "写文档" -p high -t docs -t cli
-        \\  zig-todo list --priority high --tag docs
-        \\  zig-todo edit 1 -d "写产品与架构文档"
-        \\  zig-todo list --json
-        \\  zig-todo clear --done
+        \\  zig-todo add "写文档" -p high -t docs --due 2026-12-31
+        \\  zig-todo list --overdue
+        \\  zig-todo export backup.json
+        \\  zig-todo import backup.json
+        \\  zig-todo archive --done
         \\
     );
 }
@@ -89,6 +96,18 @@ pub fn printCleared(writer: *Io.Writer, count: usize) Io.Writer.Error!void {
     try writer.print("Cleared {d} done todo(s)\n", .{count});
 }
 
+pub fn printArchived(writer: *Io.Writer, count: usize) Io.Writer.Error!void {
+    try writer.print("Archived {d} done todo(s)\n", .{count});
+}
+
+pub fn printImported(writer: *Io.Writer, count: usize) Io.Writer.Error!void {
+    try writer.print("Imported {d} todo(s)\n", .{count});
+}
+
+pub fn printExported(writer: *Io.Writer, path: []const u8) Io.Writer.Error!void {
+    try writer.print("Exported to {s}\n", .{path});
+}
+
 pub fn printTodoList(
     writer: *Io.Writer,
     list: *const domain_list.TodoList,
@@ -97,6 +116,7 @@ pub fn printTodoList(
     const id_w: usize = 4;
     const pri_w: usize = 5;
     const status_w: usize = 7;
+    const due_w: usize = 10;
     const tags_w: usize = 12;
     var matched: usize = 0;
 
@@ -111,7 +131,7 @@ pub fn printTodoList(
             try writer.writeAll("Add one with: zig-todo add \"your task\"\n");
         } else {
             try writer.writeAll("No todos matched the current filters.\n");
-            try writer.writeAll("Try: zig-todo list --status all\n");
+            try writer.writeAll("Try: zig-todo list --all\n");
         }
         return;
     }
@@ -121,6 +141,8 @@ pub fn printTodoList(
     try padWrite(writer, "PRI", pri_w);
     try writer.writeAll("  ");
     try padWrite(writer, "STATUS", status_w);
+    try writer.writeAll("  ");
+    try padWrite(writer, "DUE", due_w);
     try writer.writeAll("  ");
     try padWrite(writer, "TAGS", tags_w);
     try writer.writeAll("  TEXT\n");
@@ -132,6 +154,8 @@ pub fn printTodoList(
         try padWrite(writer, domain_todo.priorityString(item.priority), pri_w);
         try writer.writeAll("  ");
         try padWrite(writer, statusString(item.status), status_w);
+        try writer.writeAll("  ");
+        try writeDuePadded(writer, item.due_at, due_w);
         try writer.writeAll("  ");
         try writeTagsPadded(writer, item.tags, tags_w);
         try writer.print("  {s}\n", .{item.text});
@@ -151,6 +175,12 @@ pub fn printTodoDetail(writer: *Io.Writer, item: domain_todo.Todo) Io.Writer.Err
         try writer.print("completed_at: {d}\n", .{c});
     } else {
         try writer.writeAll("completed_at: -\n");
+    }
+    if (item.due_at) |d| {
+        var buf: [16]u8 = undefined;
+        try writer.print("due_at:       {s} ({d})\n", .{ date_util.formatDueDate(d, &buf), d });
+    } else {
+        try writer.writeAll("due_at:       -\n");
     }
     try writer.print("text:         {s}\n", .{item.text});
 }
@@ -187,6 +217,7 @@ fn writeTodoJson(allocator: Allocator, writer: *Io.Writer, item: domain_todo.Tod
         .created_at = item.created_at,
         .updated_at = item.updated_at,
         .completed_at = item.completed_at,
+        .due_at = item.due_at,
     };
     const bytes = try std.json.Stringify.valueAlloc(allocator, view, .{});
     defer allocator.free(bytes);
@@ -202,6 +233,7 @@ const JsonTodo = struct {
     created_at: i64,
     updated_at: i64,
     completed_at: ?i64,
+    due_at: ?i64 = null,
 };
 
 fn statusString(s: domain_todo.Status) []const u8 {
@@ -209,6 +241,16 @@ fn statusString(s: domain_todo.Status) []const u8 {
         .open => "open",
         .done => "done",
     };
+}
+
+fn writeDuePadded(writer: *Io.Writer, due_at: ?i64, width: usize) Io.Writer.Error!void {
+    if (due_at) |ts| {
+        var buf: [16]u8 = undefined;
+        const text = date_util.formatDueDate(ts, &buf);
+        try padWrite(writer, text, width);
+    } else {
+        try padWrite(writer, "-", width);
+    }
 }
 
 fn padWrite(writer: *Io.Writer, text: []const u8, width: usize) Io.Writer.Error!void {

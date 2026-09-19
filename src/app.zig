@@ -65,6 +65,26 @@ pub fn clearDone(store: *JsonFileStore) !usize {
     return n;
 }
 
+pub fn archiveDone(store: *JsonFileStore) !usize {
+    return try store.archiveDone();
+}
+
+pub fn exportToPath(store: *JsonFileStore, path: []const u8) !void {
+    var list = try store.load();
+    defer list.deinit();
+    try store.writeExportFile(&list, path);
+}
+
+pub fn exportBytes(store: *JsonFileStore) ![]u8 {
+    var list = try store.load();
+    defer list.deinit();
+    return try store.exportArrayBytes(&list);
+}
+
+pub fn importFromPath(store: *JsonFileStore, path: []const u8, now_ts: i64) !usize {
+    return try store.importFromFile(path, now_ts);
+}
+
 pub fn now(io: Io) i64 {
     return time_util.nowUnixSeconds(io);
 }

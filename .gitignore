@@ -5,3 +5,6 @@ zig-out/
 .DS_Store
 todos.json
 todos.json.bak
+archive.json
+backup.json
+todos.lock

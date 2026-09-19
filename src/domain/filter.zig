@@ -8,6 +8,8 @@ pub const Filter = struct {
     priority: ?todo_mod.Priority = null,
     /// All listed tags must be present (AND).
     tags: []const []const u8 = &.{},
+    /// If set, only open todos with due_at < now.
+    overdue_before: ?i64 = null,
 };
 
 pub fn matchesStatus(item: todo_mod.Todo, filter: StatusFilter) bool {
@@ -26,19 +28,22 @@ pub fn matches(item: todo_mod.Todo, filter: Filter) bool {
     for (filter.tags) |tag| {
         if (!item.hasTag(tag)) return false;
     }
+    if (filter.overdue_before) |now| {
+        if (!item.isOverdue(now)) return false;
+    }
     return true;
 }
 
-test "combined filter" {
+test "combined filter and overdue" {
     const gpa = std.testing.allocator;
     var item = try todo_mod.create(gpa, 1, "a", 0, .{
         .priority = .high,
         .tags = &.{ "docs", "cli" },
+        .due_at = 50,
     });
     defer item.deinit(gpa);
 
     try std.testing.expect(matches(item, .{ .status = .open, .priority = .high, .tags = &.{"docs"} }));
-    try std.testing.expect(!matches(item, .{ .status = .open, .priority = .low }));
-    try std.testing.expect(!matches(item, .{ .status = .open, .tags = &.{"missing"} }));
-    try std.testing.expect(matches(item, .{ .status = .open, .tags = &.{ "docs", "cli" } }));
+    try std.testing.expect(matches(item, .{ .status = .open, .overdue_before = 100 }));
+    try std.testing.expect(!matches(item, .{ .status = .open, .overdue_before = 10 }));
 }

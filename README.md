@@ -2,7 +2,7 @@
 
 用 Zig 实现的轻量本地 Todo CLI。
 
-当前进度：**P3 完成**（原子写、CI、体验打磨）。可作为个人日常使用版本。
+当前进度：**P4 核心完成**（导入/导出、截止日期、归档、文件锁、Windows 路径与 CI）。完整 TUI 仍在 Backlog。
 
 ## 要求
 
@@ -30,10 +30,13 @@ zig build -Doptimize=ReleaseFast
 ## 快速开始
 
 ```bash
-zig-todo add "写文档" -p high -t docs
+zig-todo add "写文档" -p high -t docs --due 2026-12-31
 zig-todo list
+zig-todo list --overdue
 zig-todo done 1
-zig-todo list --status all --json
+zig-todo archive --done
+zig-todo export backup.json
+zig-todo import backup.json
 ```
 
 开发/测试时建议隔离数据目录：
@@ -52,25 +55,31 @@ zig-todo --data-dir /tmp/zig-todo-demo add "demo"
 | 2 | 环境变量 `ZIG_TODO_DATA_DIR` |
 | 3 | `$XDG_DATA_HOME/zig-todo` |
 | 4 | macOS：`~/Library/Application Support/zig-todo` |
-| 5 | 其它 Unix：`~/.local/share/zig-todo` |
+| 5 | Windows：`%APPDATA%\zig-todo` |
+| 6 | 其它 Unix：`~/.local/share/zig-todo` |
 
 文件：
 
-- `todos.json` — 主数据（原子写）
+- `todos.json` — 主数据（schema v2，原子写）
 - `todos.json.bak` — 上一次成功保存的快照
+- `archive.json` — 已归档的完成项
+- `todos.lock` — 建议性文件锁
 
 ## 命令速查
 
 | 命令 | 说明 |
 | --- | --- |
-| `add "<text>" [-p pri] [-t tag]...` | 新增 |
+| `add "<text>" [-p pri] [-t tag]... [--due DATE]` | 新增 |
 | `list` / `ls` | 列表（默认 open） |
-| `list --status/--priority/--tag` | 组合过滤 |
+| `list --status/--priority/--tag/--overdue` | 组合过滤 |
 | `show <id>` | 详情 |
-| `edit <id> [-d text] [-p pri] [-t tag]...` | 编辑（`-d` = 改描述） |
+| `edit <id> [-d text] [-p pri] [-t tag]... [--due DATE\|none]` | 编辑 |
 | `done` / `undone <id>` | 完成 / 取消完成 |
 | `rm` / `delete <id>` | 删除 |
-| `clear --done` | 清理已完成 |
+| `clear --done` | 清理已完成（永久删除） |
+| `archive --done` | 归档已完成到 `archive.json` |
+| `export [path]` | 导出 JSON 数组（无路径则 stdout） |
+| `import <path>` | 导入 JSON 数组或完整文档 |
 | `--json` / `-q` | JSON 输出 / 安静模式 |
 
 ## 退出码
@@ -88,7 +97,7 @@ zig-todo --data-dir /tmp/zig-todo-demo add "demo"
 zig build test
 ```
 
-CI：GitHub Actions 在 Linux / macOS 上执行 `zig build` 与 `zig build test`。
+CI：GitHub Actions 在 Linux / macOS / Windows 上执行 `zig build` 与 `zig build test`。
 
 ## 文档
 

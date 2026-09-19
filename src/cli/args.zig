@@ -1,318 +1,466 @@
+//! Argv → Parsed (P4).
+
 const std = @import("std");
 const commands = @import("commands.zig");
-const todo_mod = @import("../domain/todo.zig");
+const date_util = @import("../util/date.zig");
 
-/// Parse argv (including program name at index 0).
-pub fn parse(argv: []const []const u8) commands.Parsed {
+pub const Parsed = commands.Parsed;
+pub const Command = commands.Command;
+pub const Priority = commands.Priority;
+pub const StatusFilter = commands.StatusFilter;
+pub const DuePatch = commands.DuePatch;
+
+pub fn parse(argv: []const []const u8) Parsed {
     var data_dir: ?[]const u8 = null;
     var json = false;
     var quiet = false;
-
-    var tokens: [96][]const u8 = undefined;
-    var token_count: usize = 0;
-
     var i: usize = 1;
-    while (i < argv.len) : (i += 1) {
-        const arg = argv[i];
-        if (eql(arg, "--data-dir")) {
-            if (i + 1 >= argv.len) return usage(null, json, quiet, "--data-dir requires a path");
+
+    while (i < argv.len) {
+        const a = argv[i];
+        if (std.mem.eql(u8, a, "--")) {
             i += 1;
-            data_dir = argv[i];
-            continue;
+            break;
         }
-        if (std.mem.startsWith(u8, arg, "--data-dir=")) {
-            const value = arg["--data-dir=".len..];
-            if (value.len == 0) return usage(null, json, quiet, "--data-dir requires a path");
-            data_dir = value;
-            continue;
+        if (std.mem.eql(u8, a, "--help") or std.mem.eql(u8, a, "-h")) {
+            return .{ .data_dir = data_dir, .json = json, .quiet = quiet, .command = .help };
         }
-        if (eql(arg, "--json")) {
+        if (std.mem.eql(u8, a, "--version") or std.mem.eql(u8, a, "-V")) {
+            return .{ .data_dir = data_dir, .json = json, .quiet = quiet, .command = .version };
+        }
+        if (std.mem.eql(u8, a, "--json")) {
             json = true;
+            i += 1;
             continue;
         }
-        if (eql(arg, "-q") or eql(arg, "--quiet")) {
+        if (std.mem.eql(u8, a, "--quiet") or std.mem.eql(u8, a, "-q")) {
             quiet = true;
+            i += 1;
             continue;
         }
-        if (token_count >= tokens.len) return usage(data_dir, json, quiet, "too many arguments");
-        tokens[token_count] = arg;
-        token_count += 1;
+        if (std.mem.eql(u8, a, "--data-dir") or std.mem.eql(u8, a, "-d")) {
+            if (i + 1 >= argv.len) {
+                return .{ .command = .{ .usage = "缺少 --data-dir 参数值" } };
+            }
+            data_dir = argv[i + 1];
+            i += 2;
+            continue;
+        }
+        if (std.mem.startsWith(u8, a, "-")) {
+            return .{ .data_dir = data_dir, .json = json, .quiet = quiet, .command = .{ .unknown = a } };
+        }
+        break;
     }
 
-    const rest = tokens[0..token_count];
-    if (rest.len == 0) {
-        return .{ .data_dir = data_dir, .json = json, .quiet = quiet, .command = .help };
+    if (i >= argv.len) {
+        return .{ .data_dir = data_dir, .json = json, .quiet = quiet, .command = .{ .list = .{} } };
     }
 
-    const first = rest[0];
-    if (isHelpFlag(first) or eql(first, "help")) {
+    const name = argv[i];
+    i += 1;
+    const rest = argv[i..];
+
+    if (std.mem.eql(u8, name, "help") or std.mem.eql(u8, name, "--help") or std.mem.eql(u8, name, "-h")) {
         return .{ .data_dir = data_dir, .json = json, .quiet = quiet, .command = .help };
     }
-    if (isVersionFlag(first) or eql(first, "version")) {
+    if (std.mem.eql(u8, name, "version") or std.mem.eql(u8, name, "--version") or std.mem.eql(u8, name, "-V")) {
         return .{ .data_dir = data_dir, .json = json, .quiet = quiet, .command = .version };
     }
-
-    if (eql(first, "add")) {
-        return parseAdd(data_dir, json, quiet, rest[1..]);
+    if (std.mem.eql(u8, name, "add")) {
+        return parseAdd(data_dir, json, quiet, rest);
     }
-    if (eql(first, "list") or eql(first, "ls")) {
-        return parseList(data_dir, json, quiet, rest[1..]);
+    if (std.mem.eql(u8, name, "list") or std.mem.eql(u8, name, "ls")) {
+        return parseList(data_dir, json, quiet, rest);
     }
-    if (eql(first, "show")) {
-        const id = parseSingleId(rest) orelse {
-            return usage(data_dir, json, quiet, "usage: zig-todo show <id>");
-        };
-        return .{ .data_dir = data_dir, .json = json, .quiet = quiet, .command = .{ .show = .{ .id = id } } };
+    if (std.mem.eql(u8, name, "show")) {
+        return parseIdCmd(data_dir, json, quiet, rest, .show);
     }
-    if (eql(first, "done")) {
-        const id = parseSingleId(rest) orelse {
-            return usage(data_dir, json, quiet, "usage: zig-todo done <id>");
-        };
-        return .{ .data_dir = data_dir, .json = json, .quiet = quiet, .command = .{ .done = .{ .id = id } } };
+    if (std.mem.eql(u8, name, "done")) {
+        return parseIdCmd(data_dir, json, quiet, rest, .done);
     }
-    if (eql(first, "undone")) {
-        const id = parseSingleId(rest) orelse {
-            return usage(data_dir, json, quiet, "usage: zig-todo undone <id>");
-        };
-        return .{ .data_dir = data_dir, .json = json, .quiet = quiet, .command = .{ .undone = .{ .id = id } } };
+    if (std.mem.eql(u8, name, "undone")) {
+        return parseIdCmd(data_dir, json, quiet, rest, .undone);
     }
-    if (eql(first, "edit")) {
-        return parseEdit(data_dir, json, quiet, rest[1..]);
+    if (std.mem.eql(u8, name, "rm") or std.mem.eql(u8, name, "remove") or std.mem.eql(u8, name, "delete")) {
+        return parseIdCmd(data_dir, json, quiet, rest, .rm);
     }
-    if (eql(first, "rm") or eql(first, "delete")) {
-        const id = parseSingleId(rest) orelse {
-            return usage(data_dir, json, quiet, "usage: zig-todo rm <id>");
-        };
-        return .{ .data_dir = data_dir, .json = json, .quiet = quiet, .command = .{ .rm = .{ .id = id } } };
+    if (std.mem.eql(u8, name, "edit")) {
+        return parseEdit(data_dir, json, quiet, rest);
     }
-    if (eql(first, "clear")) {
-        return parseClear(data_dir, json, quiet, rest[1..]);
+    if (std.mem.eql(u8, name, "clear")) {
+        return parseClear(data_dir, json, quiet, rest);
+    }
+    if (std.mem.eql(u8, name, "archive")) {
+        return parseArchive(data_dir, json, quiet, rest);
+    }
+    if (std.mem.eql(u8, name, "export")) {
+        return parseExport(data_dir, json, quiet, rest);
+    }
+    if (std.mem.eql(u8, name, "import")) {
+        return parseImport(data_dir, json, quiet, rest);
     }
 
-    return .{ .data_dir = data_dir, .json = json, .quiet = quiet, .command = .{ .unknown = first } };
+    return .{ .data_dir = data_dir, .json = json, .quiet = quiet, .command = .{ .unknown = name } };
 }
 
-fn parseAdd(data_dir: ?[]const u8, json: bool, quiet: bool, args: []const []const u8) commands.Parsed {
-    var priority: todo_mod.Priority = .medium;
-    var tags: commands.TagBuf = .{};
-    var text: ?[]const u8 = null;
+const IdKind = enum { show, done, undone, rm };
 
-    var i: usize = 0;
-    while (i < args.len) : (i += 1) {
-        const a = args[i];
-        if (eql(a, "-p") or eql(a, "--priority")) {
-            if (i + 1 >= args.len) return usage(data_dir, json, quiet, "-p requires low|medium|high");
-            i += 1;
-            priority = todo_mod.parsePriority(args[i]) orelse {
-                return usage(data_dir, json, quiet, "-p requires low|medium|high");
-            };
-        } else if (std.mem.startsWith(u8, a, "--priority=")) {
-            priority = todo_mod.parsePriority(a["--priority=".len..]) orelse {
-                return usage(data_dir, json, quiet, "-p requires low|medium|high");
-            };
-        } else if (eql(a, "-t") or eql(a, "--tag")) {
-            if (i + 1 >= args.len) return usage(data_dir, json, quiet, "-t requires a tag");
-            i += 1;
-            if (!tags.append(args[i])) return usage(data_dir, json, quiet, "too many tags");
-        } else if (std.mem.startsWith(u8, a, "--tag=")) {
-            const v = a["--tag=".len..];
-            if (v.len == 0) return usage(data_dir, json, quiet, "-t requires a tag");
-            if (!tags.append(v)) return usage(data_dir, json, quiet, "too many tags");
-        } else if (std.mem.startsWith(u8, a, "-")) {
-            return usage(data_dir, json, quiet, "usage: zig-todo add \"<text>\" [-p pri] [-t tag]...");
-        } else {
-            if (text != null) return usage(data_dir, json, quiet, "usage: zig-todo add \"<text>\" [-p pri] [-t tag]...");
-            text = a;
-        }
+fn parseIdCmd(data_dir: ?[]const u8, json: bool, quiet: bool, rest: []const []const u8, kind: IdKind) Parsed {
+    if (rest.len != 1) {
+        return .{ .data_dir = data_dir, .json = json, .quiet = quiet, .command = .{ .usage = "需要一个 id" } };
     }
-
-    const t = text orelse {
-        return usage(data_dir, json, quiet, "usage: zig-todo add \"<text>\" [-p pri] [-t tag]...");
+    const id = std.fmt.parseInt(u64, rest[0], 10) catch {
+        return .{ .data_dir = data_dir, .json = json, .quiet = quiet, .command = .{ .usage = "id 必须是正整数" } };
     };
+    if (id == 0) {
+        return .{ .data_dir = data_dir, .json = json, .quiet = quiet, .command = .{ .usage = "id 必须是正整数" } };
+    }
+    const args: commands.IdArgs = .{ .id = id };
     return .{
         .data_dir = data_dir,
         .json = json,
         .quiet = quiet,
-        .command = .{ .add = .{ .text = t, .priority = priority, .tags = tags } },
+        .command = switch (kind) {
+            .show => .{ .show = args },
+            .done => .{ .done = args },
+            .undone => .{ .undone = args },
+            .rm => .{ .rm = args },
+        },
     };
 }
 
-fn parseList(data_dir: ?[]const u8, json: bool, quiet: bool, args: []const []const u8) commands.Parsed {
-    var status: commands.StatusFilter = .open;
-    var priority: ?todo_mod.Priority = null;
+fn parseAdd(data_dir: ?[]const u8, json: bool, quiet: bool, rest: []const []const u8) Parsed {
+    var priority: Priority = .medium;
     var tags: commands.TagBuf = .{};
-
+    var due_at: ?i64 = null;
+    var text_parts: [32][]const u8 = undefined;
+    var text_n: usize = 0;
     var i: usize = 0;
-    while (i < args.len) : (i += 1) {
-        const a = args[i];
-        if (eql(a, "--status")) {
-            if (i + 1 >= args.len) return usage(data_dir, json, quiet, "--status requires open|done|all");
-            i += 1;
-            status = parseStatus(args[i]) orelse {
-                return usage(data_dir, json, quiet, "--status requires open|done|all");
+
+    while (i < rest.len) {
+        const a = rest[i];
+        if (std.mem.eql(u8, a, "--priority") or std.mem.eql(u8, a, "-p")) {
+            if (i + 1 >= rest.len) {
+                return .{ .data_dir = data_dir, .json = json, .quiet = quiet, .command = .{ .usage = "缺少 --priority 值" } };
+            }
+            priority = parsePriority(rest[i + 1]) orelse {
+                return .{ .data_dir = data_dir, .json = json, .quiet = quiet, .command = .{ .usage = "priority 应为 low|medium|high" } };
             };
-        } else if (std.mem.startsWith(u8, a, "--status=")) {
-            status = parseStatus(a["--status=".len..]) orelse {
-                return usage(data_dir, json, quiet, "--status requires open|done|all");
-            };
-        } else if (eql(a, "--priority") or eql(a, "-p")) {
-            if (i + 1 >= args.len) return usage(data_dir, json, quiet, "--priority requires low|medium|high");
-            i += 1;
-            priority = todo_mod.parsePriority(args[i]) orelse {
-                return usage(data_dir, json, quiet, "--priority requires low|medium|high");
-            };
-        } else if (std.mem.startsWith(u8, a, "--priority=")) {
-            priority = todo_mod.parsePriority(a["--priority=".len..]) orelse {
-                return usage(data_dir, json, quiet, "--priority requires low|medium|high");
-            };
-        } else if (eql(a, "--tag") or eql(a, "-t")) {
-            if (i + 1 >= args.len) return usage(data_dir, json, quiet, "--tag requires a tag");
-            i += 1;
-            if (!tags.append(args[i])) return usage(data_dir, json, quiet, "too many tags");
-        } else if (std.mem.startsWith(u8, a, "--tag=")) {
-            const v = a["--tag=".len..];
-            if (v.len == 0) return usage(data_dir, json, quiet, "--tag requires a tag");
-            if (!tags.append(v)) return usage(data_dir, json, quiet, "too many tags");
-        } else {
-            return usage(data_dir, json, quiet, "usage: zig-todo list [--status ...] [--priority ...] [--tag ...]");
+            i += 2;
+            continue;
         }
+        if (std.mem.eql(u8, a, "--tag") or std.mem.eql(u8, a, "-t")) {
+            if (i + 1 >= rest.len) {
+                return .{ .data_dir = data_dir, .json = json, .quiet = quiet, .command = .{ .usage = "缺少 --tag 值" } };
+            }
+            if (!tags.append(rest[i + 1])) {
+                return .{ .data_dir = data_dir, .json = json, .quiet = quiet, .command = .{ .usage = "标签数量过多" } };
+            }
+            i += 2;
+            continue;
+        }
+        if (std.mem.eql(u8, a, "--due")) {
+            if (i + 1 >= rest.len) {
+                return .{ .data_dir = data_dir, .json = json, .quiet = quiet, .command = .{ .usage = "缺少 --due 值" } };
+            }
+            due_at = date_util.parseDueAt(rest[i + 1]) orelse {
+                return .{ .data_dir = data_dir, .json = json, .quiet = quiet, .command = .{ .usage = "日期格式应为 YYYY-MM-DD" } };
+            };
+            i += 2;
+            continue;
+        }
+        if (std.mem.startsWith(u8, a, "-")) {
+            return .{ .data_dir = data_dir, .json = json, .quiet = quiet, .command = .{ .unknown = a } };
+        }
+        if (text_n >= text_parts.len) {
+            return .{ .data_dir = data_dir, .json = json, .quiet = quiet, .command = .{ .usage = "标题过长" } };
+        }
+        text_parts[text_n] = a;
+        text_n += 1;
+        i += 1;
     }
+
+    if (text_n == 0) {
+        return .{ .data_dir = data_dir, .json = json, .quiet = quiet, .command = .{ .usage = "add 需要标题" } };
+    }
+
+    const text = joinWords(text_parts[0..text_n]) catch {
+        return .{ .data_dir = data_dir, .json = json, .quiet = quiet, .command = .{ .usage = "标题过长" } };
+    };
 
     return .{
         .data_dir = data_dir,
         .json = json,
         .quiet = quiet,
-        .command = .{ .list = .{ .status = status, .priority = priority, .tags = tags } },
+        .command = .{ .add = .{ .text = text, .priority = priority, .tags = tags, .due_at = due_at } },
     };
 }
 
-fn parseEdit(data_dir: ?[]const u8, json: bool, quiet: bool, args: []const []const u8) commands.Parsed {
-    if (args.len == 0) return usage(data_dir, json, quiet, "usage: zig-todo edit <id> [-d text] [-p pri] [-t tag]...");
+fn parseList(data_dir: ?[]const u8, json: bool, quiet: bool, rest: []const []const u8) Parsed {
+    var status: StatusFilter = .open;
+    var priority: ?Priority = null;
+    var tags: commands.TagBuf = .{};
+    var overdue = false;
+    var i: usize = 0;
 
-    const id = std.fmt.parseInt(u64, args[0], 10) catch {
-        return usage(data_dir, json, quiet, "usage: zig-todo edit <id> [-d text] [-p pri] [-t tag]...");
+    while (i < rest.len) {
+        const a = rest[i];
+        if (std.mem.eql(u8, a, "--all") or std.mem.eql(u8, a, "-a")) {
+            status = .all;
+            i += 1;
+            continue;
+        }
+        if (std.mem.eql(u8, a, "--done")) {
+            status = .done;
+            i += 1;
+            continue;
+        }
+        if (std.mem.eql(u8, a, "--open")) {
+            status = .open;
+            i += 1;
+            continue;
+        }
+        if (std.mem.eql(u8, a, "--status") or std.mem.eql(u8, a, "-s")) {
+            if (i + 1 >= rest.len) {
+                return .{ .data_dir = data_dir, .json = json, .quiet = quiet, .command = .{ .usage = "缺少 --status 值" } };
+            }
+            const v = rest[i + 1];
+            if (std.mem.eql(u8, v, "open")) status = .open
+            else if (std.mem.eql(u8, v, "done")) status = .done
+            else if (std.mem.eql(u8, v, "all")) status = .all
+            else {
+                return .{ .data_dir = data_dir, .json = json, .quiet = quiet, .command = .{ .usage = "status 应为 open|done|all" } };
+            }
+            i += 2;
+            continue;
+        }
+        if (std.mem.eql(u8, a, "--overdue")) {
+            overdue = true;
+            i += 1;
+            continue;
+        }
+        if (std.mem.eql(u8, a, "--priority") or std.mem.eql(u8, a, "-p")) {
+            if (i + 1 >= rest.len) {
+                return .{ .data_dir = data_dir, .json = json, .quiet = quiet, .command = .{ .usage = "缺少 --priority 值" } };
+            }
+            priority = parsePriority(rest[i + 1]) orelse {
+                return .{ .data_dir = data_dir, .json = json, .quiet = quiet, .command = .{ .usage = "priority 应为 low|medium|high" } };
+            };
+            i += 2;
+            continue;
+        }
+        if (std.mem.eql(u8, a, "--tag") or std.mem.eql(u8, a, "-t")) {
+            if (i + 1 >= rest.len) {
+                return .{ .data_dir = data_dir, .json = json, .quiet = quiet, .command = .{ .usage = "缺少 --tag 值" } };
+            }
+            if (!tags.append(rest[i + 1])) {
+                return .{ .data_dir = data_dir, .json = json, .quiet = quiet, .command = .{ .usage = "标签数量过多" } };
+            }
+            i += 2;
+            continue;
+        }
+        return .{ .data_dir = data_dir, .json = json, .quiet = quiet, .command = .{ .unknown = a } };
+    }
+
+    return .{
+        .data_dir = data_dir,
+        .json = json,
+        .quiet = quiet,
+        .command = .{ .list = .{ .status = status, .priority = priority, .tags = tags, .overdue = overdue } },
     };
+}
+
+fn parseEdit(data_dir: ?[]const u8, json: bool, quiet: bool, rest: []const []const u8) Parsed {
+    if (rest.len < 1) {
+        return .{ .data_dir = data_dir, .json = json, .quiet = quiet, .command = .{ .usage = "edit 需要 id" } };
+    }
+    const id = std.fmt.parseInt(u64, rest[0], 10) catch {
+        return .{ .data_dir = data_dir, .json = json, .quiet = quiet, .command = .{ .usage = "id 必须是正整数" } };
+    };
+    if (id == 0) {
+        return .{ .data_dir = data_dir, .json = json, .quiet = quiet, .command = .{ .usage = "id 必须是正整数" } };
+    }
 
     var text: ?[]const u8 = null;
-    var priority: ?todo_mod.Priority = null;
+    var priority: ?Priority = null;
     var tags: ?commands.TagBuf = null;
+    var due_at: ?DuePatch = null;
     var tag_buf: commands.TagBuf = .{};
     var tags_set = false;
-
+    var text_parts: [32][]const u8 = undefined;
+    var text_n: usize = 0;
     var i: usize = 1;
-    while (i < args.len) : (i += 1) {
-        const a = args[i];
-        if (eql(a, "-d") or eql(a, "--text")) {
-            if (i + 1 >= args.len) return usage(data_dir, json, quiet, "-d requires text");
-            i += 1;
-            text = args[i];
-        } else if (std.mem.startsWith(u8, a, "--text=")) {
-            text = a["--text=".len..];
-        } else if (eql(a, "-p") or eql(a, "--priority")) {
-            if (i + 1 >= args.len) return usage(data_dir, json, quiet, "-p requires low|medium|high");
-            i += 1;
-            priority = todo_mod.parsePriority(args[i]) orelse {
-                return usage(data_dir, json, quiet, "-p requires low|medium|high");
-            };
-        } else if (std.mem.startsWith(u8, a, "--priority=")) {
-            priority = todo_mod.parsePriority(a["--priority=".len..]) orelse {
-                return usage(data_dir, json, quiet, "-p requires low|medium|high");
-            };
-        } else if (eql(a, "-t") or eql(a, "--tag")) {
-            if (i + 1 >= args.len) return usage(data_dir, json, quiet, "-t requires a tag");
-            i += 1;
-            tags_set = true;
-            if (!tag_buf.append(args[i])) return usage(data_dir, json, quiet, "too many tags");
-        } else if (std.mem.startsWith(u8, a, "--tag=")) {
-            const v = a["--tag=".len..];
-            if (v.len == 0) return usage(data_dir, json, quiet, "-t requires a tag");
-            tags_set = true;
-            if (!tag_buf.append(v)) return usage(data_dir, json, quiet, "too many tags");
-        } else {
-            return usage(data_dir, json, quiet, "usage: zig-todo edit <id> [-d text] [-p pri] [-t tag]...");
+
+    while (i < rest.len) {
+        const a = rest[i];
+        if (std.mem.eql(u8, a, "--text") or std.mem.eql(u8, a, "-d")) {
+            if (i + 1 >= rest.len) {
+                return .{ .data_dir = data_dir, .json = json, .quiet = quiet, .command = .{ .usage = "缺少 --text/-d 值" } };
+            }
+            text = rest[i + 1];
+            i += 2;
+            continue;
         }
+        if (std.mem.eql(u8, a, "--priority") or std.mem.eql(u8, a, "-p")) {
+            if (i + 1 >= rest.len) {
+                return .{ .data_dir = data_dir, .json = json, .quiet = quiet, .command = .{ .usage = "缺少 --priority 值" } };
+            }
+            priority = parsePriority(rest[i + 1]) orelse {
+                return .{ .data_dir = data_dir, .json = json, .quiet = quiet, .command = .{ .usage = "priority 应为 low|medium|high" } };
+            };
+            i += 2;
+            continue;
+        }
+        if (std.mem.eql(u8, a, "--tag") or std.mem.eql(u8, a, "-t")) {
+            if (i + 1 >= rest.len) {
+                return .{ .data_dir = data_dir, .json = json, .quiet = quiet, .command = .{ .usage = "缺少 --tag 值" } };
+            }
+            if (!tag_buf.append(rest[i + 1])) {
+                return .{ .data_dir = data_dir, .json = json, .quiet = quiet, .command = .{ .usage = "标签数量过多" } };
+            }
+            tags_set = true;
+            i += 2;
+            continue;
+        }
+        if (std.mem.eql(u8, a, "--due")) {
+            if (i + 1 >= rest.len) {
+                return .{ .data_dir = data_dir, .json = json, .quiet = quiet, .command = .{ .usage = "缺少 --due 值" } };
+            }
+            if (std.mem.eql(u8, rest[i + 1], "none") or std.mem.eql(u8, rest[i + 1], "-")) {
+                due_at = .{ .clear = {} };
+            } else {
+                const ts = date_util.parseDueAt(rest[i + 1]) orelse {
+                    return .{ .data_dir = data_dir, .json = json, .quiet = quiet, .command = .{ .usage = "日期格式应为 YYYY-MM-DD 或 none" } };
+                };
+                due_at = .{ .set = ts };
+            }
+            i += 2;
+            continue;
+        }
+        if (std.mem.startsWith(u8, a, "-")) {
+            return .{ .data_dir = data_dir, .json = json, .quiet = quiet, .command = .{ .unknown = a } };
+        }
+        if (text_n >= text_parts.len) {
+            return .{ .data_dir = data_dir, .json = json, .quiet = quiet, .command = .{ .usage = "标题过长" } };
+        }
+        text_parts[text_n] = a;
+        text_n += 1;
+        i += 1;
     }
 
+    if (text_n > 0) {
+        text = joinWords(text_parts[0..text_n]) catch {
+            return .{ .data_dir = data_dir, .json = json, .quiet = quiet, .command = .{ .usage = "标题过长" } };
+        };
+    }
     if (tags_set) tags = tag_buf;
-    if (text == null and priority == null and tags == null) {
-        return usage(data_dir, json, quiet, "edit requires at least one of -d/-p/-t");
+
+    if (text == null and priority == null and tags == null and due_at == null) {
+        return .{ .data_dir = data_dir, .json = json, .quiet = quiet, .command = .{ .usage = "edit 至少需要一项修改" } };
     }
 
     return .{
         .data_dir = data_dir,
         .json = json,
         .quiet = quiet,
-        .command = .{ .edit = .{ .id = id, .text = text, .priority = priority, .tags = tags } },
+        .command = .{ .edit = .{ .id = id, .text = text, .priority = priority, .tags = tags, .due_at = due_at } },
     };
 }
 
-fn parseClear(data_dir: ?[]const u8, json: bool, quiet: bool, args: []const []const u8) commands.Parsed {
+fn parseClear(data_dir: ?[]const u8, json: bool, quiet: bool, rest: []const []const u8) Parsed {
     var done_only = false;
-    for (args) |a| {
-        if (eql(a, "--done")) {
+    for (rest) |a| {
+        if (std.mem.eql(u8, a, "--done")) {
             done_only = true;
-        } else {
-            return usage(data_dir, json, quiet, "usage: zig-todo clear --done");
+            continue;
         }
+        return .{ .data_dir = data_dir, .json = json, .quiet = quiet, .command = .{ .unknown = a } };
     }
-    if (!done_only) return usage(data_dir, json, quiet, "usage: zig-todo clear --done");
-    return .{
-        .data_dir = data_dir,
-        .json = json,
-        .quiet = quiet,
-        .command = .{ .clear = .{ .done_only = true } },
-    };
+    if (!done_only) {
+        return .{ .data_dir = data_dir, .json = json, .quiet = quiet, .command = .{ .usage = "clear 目前仅支持 --done" } };
+    }
+    return .{ .data_dir = data_dir, .json = json, .quiet = quiet, .command = .{ .clear = .{ .done_only = true } } };
 }
 
-fn usage(data_dir: ?[]const u8, json: bool, quiet: bool, msg: []const u8) commands.Parsed {
-    return .{ .data_dir = data_dir, .json = json, .quiet = quiet, .command = .{ .usage = msg } };
+fn parseArchive(data_dir: ?[]const u8, json: bool, quiet: bool, rest: []const []const u8) Parsed {
+    var done_only = false;
+    for (rest) |a| {
+        if (std.mem.eql(u8, a, "--done")) {
+            done_only = true;
+            continue;
+        }
+        return .{ .data_dir = data_dir, .json = json, .quiet = quiet, .command = .{ .unknown = a } };
+    }
+    if (!done_only) {
+        return .{ .data_dir = data_dir, .json = json, .quiet = quiet, .command = .{ .usage = "archive 目前仅支持 --done" } };
+    }
+    return .{ .data_dir = data_dir, .json = json, .quiet = quiet, .command = .{ .archive = .{ .done_only = true } } };
 }
 
-fn parseSingleId(rest: []const []const u8) ?u64 {
-    if (rest.len != 2) return null;
-    return std.fmt.parseInt(u64, rest[1], 10) catch null;
+fn parseExport(data_dir: ?[]const u8, json: bool, quiet: bool, rest: []const []const u8) Parsed {
+    if (rest.len == 0) {
+        return .{ .data_dir = data_dir, .json = json, .quiet = quiet, .command = .{ .@"export" = .{ .path = null } } };
+    }
+    if (rest.len == 1) {
+        return .{ .data_dir = data_dir, .json = json, .quiet = quiet, .command = .{ .@"export" = .{ .path = rest[0] } } };
+    }
+    return .{ .data_dir = data_dir, .json = json, .quiet = quiet, .command = .{ .usage = "export 最多接受一个路径" } };
 }
 
-fn parseStatus(s: []const u8) ?commands.StatusFilter {
-    if (eql(s, "open")) return .open;
-    if (eql(s, "done")) return .done;
-    if (eql(s, "all")) return .all;
+fn parseImport(data_dir: ?[]const u8, json: bool, quiet: bool, rest: []const []const u8) Parsed {
+    if (rest.len != 1) {
+        return .{ .data_dir = data_dir, .json = json, .quiet = quiet, .command = .{ .usage = "import 需要一个文件路径" } };
+    }
+    return .{ .data_dir = data_dir, .json = json, .quiet = quiet, .command = .{ .import = .{ .path = rest[0] } } };
+}
+
+fn parsePriority(s: []const u8) ?Priority {
+    if (std.mem.eql(u8, s, "low") or std.mem.eql(u8, s, "l")) return .low;
+    if (std.mem.eql(u8, s, "medium") or std.mem.eql(u8, s, "med") or std.mem.eql(u8, s, "m")) return .medium;
+    if (std.mem.eql(u8, s, "high") or std.mem.eql(u8, s, "h")) return .high;
     return null;
 }
 
-fn isHelpFlag(s: []const u8) bool {
-    return eql(s, "-h") or eql(s, "--help");
+var join_buf: [512]u8 = undefined;
+
+fn joinWords(parts: []const []const u8) error{OutOfMemory}![]const u8 {
+    if (parts.len == 1) return parts[0];
+    var len: usize = 0;
+    for (parts, 0..) |p, idx| {
+        if (idx > 0) {
+            if (len >= join_buf.len) return error.OutOfMemory;
+            join_buf[len] = ' ';
+            len += 1;
+        }
+        if (len + p.len > join_buf.len) return error.OutOfMemory;
+        @memcpy(join_buf[len..][0..p.len], p);
+        len += p.len;
+    }
+    return join_buf[0..len];
 }
 
-fn isVersionFlag(s: []const u8) bool {
-    return eql(s, "-V") or eql(s, "--version");
+test "parse add with due" {
+    const argv = [_][]const u8{ "todo", "add", "--due", "2026-12-31", "deadline" };
+    const p = parse(&argv);
+    try std.testing.expect(p.command == .add);
+    try std.testing.expect(p.command.add.due_at != null);
 }
 
-fn eql(a: []const u8, b: []const u8) bool {
-    return std.mem.eql(u8, a, b);
+test "parse list overdue" {
+    const argv = [_][]const u8{ "todo", "list", "--overdue" };
+    const p = parse(&argv);
+    try std.testing.expect(p.command == .list);
+    try std.testing.expect(p.command.list.overdue);
 }
 
-test "parse add with priority and tags" {
-    const cmd = parse(&.{ "zig-todo", "add", "写文档", "-p", "high", "-t", "docs", "-t", "cli" });
-    try std.testing.expect(cmd.command == .add);
-    try std.testing.expectEqualStrings("写文档", cmd.command.add.text);
-    try std.testing.expect(cmd.command.add.priority == .high);
-    try std.testing.expectEqual(@as(usize, 2), cmd.command.add.tags.len);
-}
+test "parse export import archive" {
+    const a = parse(&[_][]const u8{ "todo", "export", "out.json" });
+    try std.testing.expect(a.command == .@"export");
+    try std.testing.expectEqualStrings("out.json", a.command.@"export".path.?);
 
-test "parse list filters and json" {
-    const cmd = parse(&.{ "zig-todo", "--json", "list", "--priority", "high", "--tag", "docs" });
-    try std.testing.expect(cmd.json);
-    try std.testing.expect(cmd.command == .list);
-    try std.testing.expect(cmd.command.list.priority.? == .high);
-    try std.testing.expectEqual(@as(usize, 1), cmd.command.list.tags.len);
-}
+    const b = parse(&[_][]const u8{ "todo", "import", "in.json" });
+    try std.testing.expect(b.command == .import);
 
-test "parse edit and clear" {
-    const edit_cmd = parse(&.{ "zig-todo", "edit", "1", "-d", "新描述" });
-    try std.testing.expect(edit_cmd.command == .edit);
-    try std.testing.expectEqualStrings("新描述", edit_cmd.command.edit.text.?);
-
-    const clear_cmd = parse(&.{ "zig-todo", "clear", "--done" });
-    try std.testing.expect(clear_cmd.command == .clear);
+    const c = parse(&[_][]const u8{ "todo", "archive", "--done" });
+    try std.testing.expect(c.command == .archive);
 }

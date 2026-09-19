@@ -83,6 +83,13 @@ pub const TodoList = struct {
         priority: ?Priority = null,
         /// If non-null, replace tags entirely (may be empty slice).
         tags: ?[]const []const u8 = null,
+        /// null = unchanged; otherwise set/clear due_at.
+        due_at: ?DuePatch = null,
+    };
+
+    pub const DuePatch = union(enum) {
+        clear,
+        set: i64,
     };
 
     pub fn edit(self: *TodoList, id: u64, patch: EditPatch, now: i64) (todo_mod.EditError || error{NotFound})!void {
@@ -90,6 +97,51 @@ pub const TodoList = struct {
         if (patch.text) |text| try todo_mod.setText(item, self.allocator, text, now);
         if (patch.priority) |p| todo_mod.setPriority(item, p, now);
         if (patch.tags) |tags| try todo_mod.setTags(item, self.allocator, tags, now);
+        if (patch.due_at) |due| switch (due) {
+            .clear => todo_mod.setDueAt(item, null, now),
+            .set => |ts| todo_mod.setDueAt(item, ts, now),
+        };
+    }
+
+    /// Remove done todos and return them (caller owns). Used by archive.
+    pub fn takeDone(self: *TodoList) Allocator.Error![]Todo {
+        var out: std.ArrayList(Todo) = .empty;
+        errdefer {
+            for (out.items) |item| item.deinit(self.allocator);
+            out.deinit(self.allocator);
+        }
+        var i: usize = 0;
+        while (i < self.items.items.len) {
+            if (self.items.items[i].status == .done) {
+                try out.append(self.allocator, self.items.orderedRemove(i));
+            } else {
+                i += 1;
+            }
+        }
+        return try out.toOwnedSlice(self.allocator);
+    }
+
+    /// Import todos, assigning fresh IDs. Copies text/tags.
+    pub fn importItems(
+        self: *TodoList,
+        items: []const ImportItem,
+        now: i64,
+    ) todo_mod.CreateError!usize {
+        var count: usize = 0;
+        for (items) |it| {
+            _ = try self.addNew(it.text, now, .{
+                .priority = it.priority,
+                .tags = it.tags,
+                .due_at = it.due_at,
+            });
+            // Preserve done status if requested.
+            if (it.status == .done) {
+                const id = self.next_id - 1;
+                try self.markDone(id, it.completed_at orelse now);
+            }
+            count += 1;
+        }
+        return count;
     }
 
     /// Remove all done todos. Returns count removed.
@@ -120,6 +172,15 @@ pub const TodoList = struct {
             }
         }
     }
+};
+
+pub const ImportItem = struct {
+    text: []const u8,
+    status: todo_mod.Status = .open,
+    priority: Priority = .medium,
+    tags: []const []const u8 = &.{},
+    due_at: ?i64 = null,
+    completed_at: ?i64 = null,
 };
 
 test "add list done remove edit clear" {

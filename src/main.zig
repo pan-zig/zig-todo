@@ -63,11 +63,14 @@ fn runStoreCommand(
     gpa: std.mem.Allocator,
     io: Io,
 ) !u8 {
-    const data_dir = try storage.paths.resolveDataDir(
+    const data_dir = storage.paths.resolveDataDir(
         gpa,
         init.minimal.environ,
         parsed.data_dir,
-    );
+    ) catch |err| switch (err) {
+        error.OutOfMemory => return try mapError(stderr, error.OutOfMemory),
+        error.Unexpected => return try mapError(stderr, error.IoError),
+    };
     defer gpa.free(data_dir);
 
     var store = try storage.store.JsonFileStore.init(gpa, io, data_dir);
@@ -80,6 +83,7 @@ fn runStoreCommand(
             const id = app.add(&store, a.text, now, .{
                 .priority = a.priority,
                 .tags = a.tags.slice(),
+                .due_at = a.due_at,
             }) catch |err| {
                 break :blk try mapError(stderr, err);
             };
@@ -109,6 +113,7 @@ fn runStoreCommand(
                 .status = l.status,
                 .priority = l.priority,
                 .tags = l.tags.slice(),
+                .overdue_before = if (l.overdue) now else null,
             };
             if (parsed.json) {
                 cli.output.printTodoListJson(gpa, stdout, &list, filter) catch |err| {
@@ -159,6 +164,7 @@ fn runStoreCommand(
                 .text = e.text,
                 .priority = e.priority,
                 .tags = if (e.tags) |tb| tb.slice() else null,
+                .due_at = e.due_at,
             };
             app.edit(&store, e.id, patch, now) catch |err| {
                 break :blk try mapError(stderr, err);
@@ -193,6 +199,43 @@ fn runStoreCommand(
                 break :blk try mapError(stderr, err);
             };
             if (!parsed.quiet and !parsed.json) try cli.output.printCleared(stdout, n);
+            try stdout.flush();
+            break :blk cli.exit_codes.success;
+        },
+        .archive => blk: {
+            const n = app.archiveDone(&store) catch |err| {
+                break :blk try mapError(stderr, err);
+            };
+            if (!parsed.quiet and !parsed.json) try cli.output.printArchived(stdout, n);
+            try stdout.flush();
+            break :blk cli.exit_codes.success;
+        },
+        .@"export" => |e| blk: {
+            if (e.path) |path| {
+                app.exportToPath(&store, path) catch |err| {
+                    break :blk try mapError(stderr, err);
+                };
+                if (!parsed.quiet and !parsed.json) try cli.output.printExported(stdout, path);
+            } else {
+                const bytes = app.exportBytes(&store) catch |err| {
+                    break :blk try mapError(stderr, err);
+                };
+                defer gpa.free(bytes);
+                try stdout.writeAll(bytes);
+                if (bytes.len == 0 or bytes[bytes.len - 1] != '\n') try stdout.writeAll("\n");
+            }
+            try stdout.flush();
+            break :blk cli.exit_codes.success;
+        },
+        .import => |imp| blk: {
+            const n = app.importFromPath(&store, imp.path, now) catch |err| {
+                break :blk try mapError(stderr, err);
+            };
+            if (parsed.json) {
+                try stdout.print("{{\"imported\":{d}}}\n", .{n});
+            } else if (!parsed.quiet) {
+                try cli.output.printImported(stdout, n);
+            }
             try stdout.flush();
             break :blk cli.exit_codes.success;
         },
